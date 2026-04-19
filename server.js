@@ -10,34 +10,26 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Serve the frontend website from the "public" folder
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ==========================================
-// CONFIGURATION (Set via Render Environment Variables)
-// ==========================================
 const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 const REDIRECT_URI = process.env.REDIRECT_URI; 
-const RUST_SERVER_SECRET = process.env.RUST_SERVER_SECRET; 
+const RUST_SERVER_SECRET = process.env.RUST_SERVER_SECRET || "lmohs"; 
 const PORT = process.env.PORT || 3000;
 
-// Database (Using a simple JSON file for Render free tier)
-const DB_FILE = '/tmp/tokens.json'; // Render free tier clears /tmp/ on restart, but it works for testing!
+const DB_FILE = '/tmp/tokens.json'; 
 let db = {};
 if (fs.existsSync(DB_FILE)) {
-    db = JSON.parse(fs.readFileSync(DB_FILE));
+    try { db = JSON.parse(fs.readFileSync(DB_FILE)); } catch(e) {}
 }
 const saveDb = () => fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 
-// ==========================================
-// 1. OAUTH FLOW (Player links account)
-// ==========================================
 app.get('/auth/login', (req, res) => {
     const steamId = req.query.steamId;
     if (!steamId) return res.status(400).send('Missing Steam ID');
-
-    const scope = 'user-modify-playback-state user-read-playback-state';
+    // Added 'streaming' scope for the Web Playback SDK
+    const scope = 'user-modify-playback-state user-read-playback-state user-read-currently-playing streaming user-read-email user-private';
     res.redirect('https://accounts.spotify.com/authorize?' +
         querystring.stringify({
             response_type: 'code',
@@ -52,90 +44,66 @@ app.get('/auth/login', (req, res) => {
 app.get('/auth/callback', async (req, res) => {
     const code = req.query.code || null;
     const steamId = req.query.state || null; 
-
     if (!code || !steamId) return res.status(400).send('Authorization failed.');
-
     try {
         const response = await axios.post('https://accounts.spotify.com/api/token', 
-            querystring.stringify({
-                code: code,
-                redirect_uri: REDIRECT_URI,
-                grant_type: 'authorization_code'
-            }), {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Authorization': 'Basic ' + (Buffer.from(SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET).toString('base64'))
-                }
-            }
+            querystring.stringify({ code: code, redirect_uri: REDIRECT_URI, grant_type: 'authorization_code' }), 
+            { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': 'Basic ' + (Buffer.from(SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET).toString('base64')) } }
         );
-
         db[steamId] = {
             access_token: response.data.access_token,
             refresh_token: response.data.refresh_token,
             expires_at: Date.now() + (response.data.expires_in * 1000)
         };
         saveDb();
-
-        res.send('<body style="background:#121212;color:white;font-family:sans-serif;text-align:center;padding-top:50px;"><h1><span style="color:#1DB954">✔</span> Success!</h1><p>Your Spotify is linked to Rust. You can close this window!</p></body>');
-    } catch (error) {
-        console.error(error.response?.data || error.message);
-        res.status(500).send('Error linking account.');
-    }
+        res.redirect(`/?token=${response.data.access_token}&linked=true`);
+    } catch (error) { res.status(500).send('Link failed.'); }
 });
 
-// ==========================================
-// 2. RUST API ENDPOINTS
-// ==========================================
-const verifyRustServer = (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${RUST_SERVER_SECRET}`) {
-        return res.status(403).json({ error: 'Unauthorized.' });
-    }
+const verify = (req, res, next) => {
+    if (req.headers.authorization !== `Bearer ${RUST_SERVER_SECRET}`) return res.status(403).send('Forbidden');
     next();
 };
 
-async function getValidToken(steamId) {
+async function getToken(steamId) {
     const user = db[steamId];
-    if (!user) throw new Error('User not linked');
-
+    if (!user) throw new Error('Not linked');
     if (Date.now() > user.expires_at) {
-        const response = await axios.post('https://accounts.spotify.com/api/token',
-            querystring.stringify({
-                grant_type: 'refresh_token',
-                refresh_token: user.refresh_token
-            }), {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Authorization': 'Basic ' + (Buffer.from(SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET).toString('base64'))
-                }
-            }
+        const res = await axios.post('https://accounts.spotify.com/api/token',
+            querystring.stringify({ grant_type: 'refresh_token', refresh_token: user.refresh_token }),
+            { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': 'Basic ' + (Buffer.from(SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET).toString('base64')) } }
         );
-        user.access_token = response.data.access_token;
-        if (response.data.refresh_token) user.refresh_token = response.data.refresh_token; 
-        user.expires_at = Date.now() + (response.data.expires_in * 1000);
+        user.access_token = res.data.access_token;
+        user.expires_at = Date.now() + (res.data.expires_in * 1000);
         saveDb();
     }
     return user.access_token;
 }
 
-app.post('/api/spotify/control', verifyRustServer, async (req, res) => {
+app.post('/api/spotify/control', verify, async (req, res) => {
     const { steamId, action } = req.body;
     try {
-        const token = await getValidToken(steamId);
+        const token = await getToken(steamId);
         let url = 'https://api.spotify.com/v1/me/player/';
-        let method = 'POST';
-
-        if (action === 'play') { url += 'play'; method = 'PUT'; }
-        else if (action === 'pause') { url += 'pause'; method = 'PUT'; }
-        else if (action === 'next') { url += 'next'; method = 'POST'; }
-        else if (action === 'previous') { url += 'previous'; method = 'POST'; }
-
-        await axios({ method: method, url: url, headers: { 'Authorization': `Bearer ${token}` } });
+        let method = action === 'play' || action === 'pause' ? 'PUT' : 'POST';
+        if (action === 'play') url += 'play';
+        else if (action === 'pause') url += 'pause';
+        else if (action === 'next') url += 'next';
+        else if (action === 'previous') url += 'previous';
+        await axios({ method, url, headers: { 'Authorization': `Bearer ${token}` } });
         res.json({ success: true });
-    } catch (error) {
-        if (error.response && error.response.status === 404) return res.status(404).json({ error: 'No active device.' });
-        res.status(500).json({ error: error.message });
-    }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.listen(PORT, () => console.log(`Listening on ${PORT}`));
+app.post('/api/spotify/current', verify, async (req, res) => {
+    const { steamId } = req.body;
+    try {
+        const token = await getToken(steamId);
+        const response = await axios.get('https://api.spotify.com/v1/me/player/currently-playing', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (response.status === 204 || !response.data) return res.json({ success: true, track_name: "Nothing Playing" });
+        const item = response.data.item;
+        res.json({ success: true, track_name: item.name, artist_name: item.artists[0].name, image_url: item.album.images[0].url });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.listen(PORT);

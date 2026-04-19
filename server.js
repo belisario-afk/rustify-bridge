@@ -28,8 +28,8 @@ const saveDb = () => fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 app.get('/auth/login', (req, res) => {
     const steamId = req.query.steamId;
     if (!steamId) return res.status(400).send('Missing Steam ID');
-    // Added 'streaming' scope for the Web Playback SDK
-    const scope = 'user-modify-playback-state user-read-playback-state user-read-currently-playing streaming user-read-email user-private';
+    // Corrected "user-read-private" and removed unnecessary ones to ensure compatibility
+    const scope = 'user-modify-playback-state user-read-playback-state user-read-currently-playing streaming user-read-email user-read-private';
     res.redirect('https://accounts.spotify.com/authorize?' +
         querystring.stringify({
             response_type: 'code',

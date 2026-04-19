@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rustify - Link Your Account</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="flex items-center justify-center min-h-screen" style="background-color: #121212; color: white;">
+
+    <div class="bg-gray-900 p-8 rounded-2xl shadow-2xl max-w-md w-full text-center border border-gray-800">
+        <h1 class="text-3xl font-bold mb-2">Rustify Link</h1>
+        <p class="text-gray-400 mb-8 text-sm">Connect your Steam ID to your Spotify Premium account.</p>
+
+        <div class="mb-6">
+            <label class="block text-left text-sm font-medium text-gray-300 mb-2">Your Steam ID (64-bit)</label>
+            <input type="text" id="steamIdInput" placeholder="e.g. 76561198000000000" class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white">
+        </div>
+
+        <button onclick="linkAccount()" class="w-full text-black font-bold py-3 px-4 rounded-full transition duration-200" style="background-color: #1DB954;">
+            Connect with Spotify
+        </button>
+        <p id="errorText" class="text-red-500 text-sm mt-4 hidden">Please enter a valid 17-digit Steam ID.</p>
+    </div>
+
+    <script>
+        // THIS MUST MATCH YOUR RENDER URL
+        const BRIDGE_URL = "https://my-rustify-bridge.onrender.com";
+
+        function linkAccount() {
+            const steamId = document.getElementById('steamIdInput').value.trim();
+            const errorText = document.getElementById('errorText');
+            if (!steamId || steamId.length !== 17 || isNaN(steamId)) {
+                errorText.classList.remove('hidden'); return;
+            }
+            window.location.href = `${BRIDGE_URL}/auth/login?steamId=${steamId}`;
+        }
+    </script>
+</body>
+</html>
